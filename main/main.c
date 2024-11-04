@@ -18,17 +18,23 @@
 #include "esp_crc.h"
 #include "nvs_flash.h"
 #include "config.h"
+#include "driver/usb_serial_jtag.h"
+#include "esp_vfs_usb_serial_jtag.h"
+#include "esp_vfs_dev.h"
+#include <fcntl.h>
 
 #ifdef PLATFORM_REMOTE
     #define TAG "UART_BRIDGE_REMOTE"  
+    static const uint8_t own_mac_address[6] = REMOTE_MAC; // Initialize with the #define value1
 #elif defined(PLATFORM_BASE)
     #define TAG "UART_BRIDGE_BASE"  
+    static const uint8_t own_mac_address[6] = BASE_MAC; // Initialize with the #define value1
 #endif
 
 
 // Define the receiver MAC address as a global variable
-static uint8_t receiver_mac[] = RECEIVER_MAC;
-
+static uint8_t receiver_mac[6] = RECEIVER_MAC;
+static const uint8_t peer_mac_address[6] = RECEIVER_MAC; // Initialize with the #define value
 // Queue to handle uart
 static QueueHandle_t uart_queue;
 // Queue to hold received ESP-NOW data
@@ -73,7 +79,11 @@ void init_uart() {
 
     uart_driver_install(UART_PORT_NUM, UART_BUFFER_SIZE * 2, UART_BUFFER_SIZE * 2, 20, &uart_queue, 0);
     uart_param_config(UART_PORT_NUM, &uart_config);
-    uart_set_pin(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    #ifdef PLATFORM_REMOTE
+        uart_set_pin(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    #endif
+
+    
 }
 
 // Initialize Wifi
@@ -88,6 +98,23 @@ void init_wifi() {
     // Enable long-range mode if configured
     if (LONG_RANGE) {
         ESP_ERROR_CHECK(esp_wifi_set_protocol(ESP_IF_WIFI_STA, WIFI_PROTOCOL_LR));
+    }
+}
+
+// Initialize and install the USB Serial/JTAG driver
+void init_usb() {
+    // Create and configure the USB Serial/JTAG driver configuration
+    usb_serial_jtag_driver_config_t usb_serial_jtag_config = {
+        .tx_buffer_size = USB_SERIAL_TX_BUFFER_SIZE, // Set TX buffer size
+        .rx_buffer_size = USB_SERIAL_RX_BUFFER_SIZE, // Set RX buffer size
+    };
+
+    // Install the USB Serial/JTAG driver
+    esp_err_t ret = usb_serial_jtag_driver_install(&usb_serial_jtag_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE("USB_SERIAL_JTAG", "Failed to install USB Serial/JTAG driver: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI("USB_SERIAL_JTAG", "USB Serial/JTAG driver installed successfully");
     }
 }
 
@@ -117,7 +144,13 @@ void configure_external_antenna(void) {
 void uart_to_esp_now_task(void *pvParameter) {
     uint8_t data[UART_BUFFER_SIZE];
     while (1) {
-        int len = uart_read_bytes(UART_PORT_NUM, data, UART_BUFFER_SIZE, 20 / portTICK_PERIOD_MS);
+        #ifdef PLATFORM_REMOTE
+            int len = uart_read_bytes(UART_PORT_NUM, data, UART_BUFFER_SIZE, 20 / portTICK_PERIOD_MS);
+        #elif defined(PLATFORM_BASE)
+            int len = usb_serial_jtag_read_bytes(data, sizeof(data), portTICK_PERIOD_MS);
+        #endif
+        //int len = uart_read_bytes(UART_PORT_NUM, data, UART_BUFFER_SIZE, 20 / portTICK_PERIOD_MS);
+        
         if (len > 0) {
             if (DEBUG_TEST) {
                 ESP_LOGI(TAG, "uart received, sending");
@@ -132,8 +165,12 @@ void uart_to_esp_now_task(void *pvParameter) {
 void esp_now_to_uart_task(void *pvParameter) {
     esp_now_packet_t packet;
     while (1) {
-        if (xQueueReceive(esp_now_queue, &packet, portMAX_DELAY) == pdPASS) {
-            uart_write_bytes(UART_PORT_NUM, (const char *)packet.data, packet.len);
+        if (xQueueReceive(esp_now_queue, &packet, portMAX_DELAY) == pdPASS) {           
+            #ifdef PLATFORM_REMOTE
+                uart_write_bytes(UART_PORT_NUM, (const char *)packet.data, packet.len);
+            #elif defined(PLATFORM_BASE)
+                usb_serial_jtag_write_bytes(packet.data, packet.len, portMAX_DELAY);
+            #endif
             if (DEBUG_TEST) {
                 ESP_LOGI(TAG, "ESPNOW packet received, hex dump:");
                 ESP_LOG_BUFFER_HEXDUMP(TAG, packet.data, packet.len, ESP_LOG_INFO);                    // Print data as a hex dump into serial
@@ -153,6 +190,25 @@ void send_debug_task(void *pvParameter) {
     }
 }
 
+// Print out peer mac address upon app start
+void log_mac_addresses() {
+    char peer_mac_str[18]; // Buffer to hold the MAC address string
+    char own_mac_str[18]; // Hold own mac in String
+
+    // Convert the MAC address to a string
+    snprintf(peer_mac_str, sizeof(peer_mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             peer_mac_address[0], peer_mac_address[1], peer_mac_address[2],
+             peer_mac_address[3], peer_mac_address[4], peer_mac_address[5]);
+    snprintf(own_mac_str, sizeof(own_mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             own_mac_address[0], own_mac_address[1], own_mac_address[2],
+             own_mac_address[3], own_mac_address[4], own_mac_address[5]);
+
+    // Log the MAC address
+    ESP_LOGI("TAG", "Configured counterpart MAC: %s", peer_mac_str);
+    ESP_LOGI("TAG", "Own MAC: %s", own_mac_str);
+
+}
+
 
 void app_main() {
     ESP_LOGI(TAG, "Starting ESPNOW UART BRIDGE in 2 seconds");
@@ -168,19 +224,25 @@ void app_main() {
         ESP_LOGI(TAG, "xQueue created");
     }
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    init_uart();
+    init_uart();        //Use USB of PLATFORM_BASE
     ESP_LOGI(TAG, "Uart initialized");
         if (EXTERNAL_ANTENNA) {             //configured in config.h
         configure_external_antenna();
         ESP_LOGI(TAG, "External antenna configured");
     }
     init_wifi();
+    init_usb();
     ESP_LOGI(TAG, "Wifi initialized");
     init_esp_now();
     ESP_LOGI(TAG, "ESPNOW initialized");
+    log_mac_addresses();
     ESP_LOGI(TAG, "Starting xTasks in 2 seconds");
     vTaskDelay(pdMS_TO_TICKS(2000));
     xTaskCreate(uart_to_esp_now_task, "uart_to_esp_now_task", 4096, NULL, 5, NULL);
     xTaskCreate(esp_now_to_uart_task, "esp_now_to_uart_task", 4096, NULL, 5, NULL);
-    //xTaskCreate(send_debug_task, "send_debug_task", 4096, NULL, 5, NULL);
+        
+    #if DEBUG_SEND
+    xTaskCreate(send_debug_task, "send_debug_task", 4096, NULL, 5, NULL);
+    #endif
+
 }
