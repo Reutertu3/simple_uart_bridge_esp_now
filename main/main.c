@@ -32,6 +32,7 @@
 #endif
 
 
+
 // Define the receiver MAC address as a global variable
 static uint8_t receiver_mac[6] = RECEIVER_MAC;
 static const uint8_t peer_mac_address[6] = RECEIVER_MAC; // Initialize with the #define value
@@ -47,7 +48,9 @@ typedef struct {
     int len;
 } esp_now_packet_t;
 
-// Corrected callback when data is received via ESP-NOW
+
+
+// Callback function for when data is received via ESP-NOW
 static void esp_now_recv_cb(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len) {
     esp_now_packet_t packet;
     if (len > UART_BUFFER_SIZE) {
@@ -56,15 +59,26 @@ static void esp_now_recv_cb(const esp_now_recv_info_t *esp_now_info, const uint8
     memcpy(packet.mac_addr, esp_now_info->src_addr, ESP_NOW_ETH_ALEN);
     memcpy(packet.data, data, len);
     packet.len = len;
+
+    #if DEBUG_RSSI
+    // Log the RSSI value
+    int8_t rssi = esp_now_info->rx_ctrl->rssi;
+    ESP_LOGI(TAG, "Received data from MAC: " MACSTR ", RSSI: %d dBm, Data length: %d",
+             MAC2STR(esp_now_info->src_addr), rssi, len);
+    #endif
     if (xQueueSend(esp_now_queue, &packet, portMAX_DELAY) != pdPASS) {
         ESP_LOGW(TAG, "Failed to enqueue received packet");
     }
 }
 
+
+
 // Callback when data is sent via ESP-NOW
 static void esp_now_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status) {
     ESP_LOGI(TAG, "Send status: %s", status == ESP_NOW_SEND_SUCCESS ? "Success" : "Failure");
 }
+
+
 
 // Initialize UART
 void init_uart() {
@@ -86,6 +100,8 @@ void init_uart() {
     
 }
 
+
+
 // Initialize Wifi
 void init_wifi() {
     ESP_ERROR_CHECK(esp_netif_init());
@@ -100,6 +116,8 @@ void init_wifi() {
         ESP_ERROR_CHECK(esp_wifi_set_protocol(ESP_IF_WIFI_STA, WIFI_PROTOCOL_LR));
     }
 }
+
+
 
 // Initialize and install the USB Serial/JTAG driver
 void init_usb() {
@@ -117,6 +135,8 @@ void init_usb() {
         ESP_LOGI("USB_SERIAL_JTAG", "USB Serial/JTAG driver installed successfully");
     }
 }
+
+
 
 // Initialize ESP-NOW
 void init_esp_now() {
@@ -136,11 +156,16 @@ void init_esp_now() {
 // Set predefined GPIO to high for the use of an external antenna, i.e. GPIO14 Xiao C6
 void configure_external_antenna(void) {                         
     esp_rom_gpio_pad_select_gpio(EXTERNAL_ANTENNA_PIN);
+    esp_rom_gpio_pad_select_gpio(EXTERNAL_ANTENNA_PIN_ENABLE);
     gpio_set_direction(EXTERNAL_ANTENNA_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(EXTERNAL_ANTENNA_PIN, 1);  
+    gpio_set_direction(EXTERNAL_ANTENNA_PIN_ENABLE, GPIO_MODE_OUTPUT);
+    gpio_set_level(EXTERNAL_ANTENNA_PIN_ENABLE, 0);
+    gpio_set_level(EXTERNAL_ANTENNA_PIN, 1);   
 }
 
-// Task to read from UART and send via ESP-NOW
+
+
+// Task to read from UART or jtag and send via ESP-NOW
 void uart_to_esp_now_task(void *pvParameter) {
     uint8_t data[UART_BUFFER_SIZE];
     while (1) {
@@ -149,19 +174,21 @@ void uart_to_esp_now_task(void *pvParameter) {
         #elif defined(PLATFORM_BASE)
             int len = usb_serial_jtag_read_bytes(data, sizeof(data), portTICK_PERIOD_MS);
         #endif
-        //int len = uart_read_bytes(UART_PORT_NUM, data, UART_BUFFER_SIZE, 20 / portTICK_PERIOD_MS);
         
         if (len > 0) {
-            if (DEBUG_TEST) {
+            ESP_ERROR_CHECK(esp_now_send(receiver_mac, data, len));                     // Send data via ESP-NOW
+            #ifdef DEBUG_TEST
                 ESP_LOGI(TAG, "uart received, sending");
                 ESP_LOG_BUFFER_HEXDUMP(TAG, data, len, ESP_LOG_INFO);                    // Print data as a hex dump into serial
-            }
-            ESP_ERROR_CHECK(esp_now_send(receiver_mac, data, len));                     // Send data via ESP-NOW
+            #endif
+
         }
     }
 }
 
-// Task to read from the ESP-NOW queue and write to UART
+
+
+// Task to read from the ESP-NOW queue and write to either UART or jtag, depending on the platform
 void esp_now_to_uart_task(void *pvParameter) {
     esp_now_packet_t packet;
     while (1) {
@@ -171,24 +198,28 @@ void esp_now_to_uart_task(void *pvParameter) {
             #elif defined(PLATFORM_BASE)
                 usb_serial_jtag_write_bytes(packet.data, packet.len, portMAX_DELAY);
             #endif
-            if (DEBUG_TEST) {
+            #ifdef DEBUG_TEST
                 ESP_LOGI(TAG, "ESPNOW packet received, hex dump:");
                 ESP_LOG_BUFFER_HEXDUMP(TAG, packet.data, packet.len, ESP_LOG_INFO);                    // Print data as a hex dump into serial
                 ESP_LOGI(TAG, "Data received: %.*s", packet.len, packet.data);                         // Print data as a string
-            }
+            #endif
         }
     }
 }
 
-// Debug task to send 
+
+
+// Debug task to send periodic messages to UART
 void send_debug_task(void *pvParameter) {
     const char *message = "Hello from ESP32-C6!";
     while (1) {
         ESP_LOGI(TAG, "Sending message: %s", message);
-        vTaskDelay(pdMS_TO_TICKS(2000)); // Send every 1 second
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Send every 2 seconds
         uart_write_bytes(UART_PORT_NUM, (const char *)message, strlen(message));
     }
 }
+
+
 
 // Print out peer mac address upon app start
 void log_mac_addresses() {
@@ -204,10 +235,10 @@ void log_mac_addresses() {
              own_mac_address[3], own_mac_address[4], own_mac_address[5]);
 
     // Log the MAC address
-    ESP_LOGI("TAG", "Configured counterpart MAC: %s", peer_mac_str);
     ESP_LOGI("TAG", "Own MAC: %s", own_mac_str);
-
+    ESP_LOGI("TAG", "Configured peer MAC: %s", peer_mac_str);
 }
+
 
 
 void app_main() {
@@ -224,18 +255,18 @@ void app_main() {
         ESP_LOGI(TAG, "xQueue created");
     }
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    init_uart();        //Use USB of PLATFORM_BASE
+    init_uart();                        //Initialize UART with params from config.h
     ESP_LOGI(TAG, "Uart initialized");
-        if (EXTERNAL_ANTENNA) {             //configured in config.h
+    if (EXTERNAL_ANTENNA) {             //configured in config.h
         configure_external_antenna();
         ESP_LOGI(TAG, "External antenna configured");
     }
-    init_wifi();
-    init_usb();
+    init_wifi();                        //Initialize WIFI with params from config.h 
+    init_usb();                         //Initialize USB with params from config.h
     ESP_LOGI(TAG, "Wifi initialized");
-    init_esp_now();
+    init_esp_now();                     //Initialize ESP-NOW with params from config.h
     ESP_LOGI(TAG, "ESPNOW initialized");
-    log_mac_addresses();
+    log_mac_addresses();                //Print out condfigured MAC adresses 
     ESP_LOGI(TAG, "Starting xTasks in 2 seconds");
     vTaskDelay(pdMS_TO_TICKS(2000));
     xTaskCreate(uart_to_esp_now_task, "uart_to_esp_now_task", 4096, NULL, 5, NULL);
