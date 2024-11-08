@@ -3,7 +3,7 @@
 #define CONFIG_H
 
 // ***************** Platform configuration *****************
-// Define the platform: uncomment one of these lines
+// ******* Define the platform: uncomment either  PLATFORM_REMOTE or PLATFORM_BASE *********
 //#define PLATFORM_REMOTE
 #define PLATFORM_BASE
 #define REMOTE_MAC {0x54, 0x32, 0x04, 0x11, 0xcd, 0x94}         // Replace with actual MAC address of the remote unit
@@ -15,7 +15,7 @@
 
 
 // ***************** WIFI configuration *****************
-#define WIFI_CHANNEL            1                   // WiFi Channel (1-13)
+#define WIFI_CHANNEL                1                   // WiFi Channel (1-13)
 #ifdef PLATFORM_REMOTE
     #define RECEIVER_MAC BASE_MAC  
 #elif defined(PLATFORM_BASE)
@@ -27,6 +27,7 @@
 #define EXTERNAL_ANTENNA            true                // Enable external antenna on Seeedstudio Xiao ESP32 C6 on Pin 14
 #define EXTERNAL_ANTENNA_PIN        14                  // External antenna pin that gets set to HIGH
 #define EXTERNAL_ANTENNA_PIN_ENABLE 3                   // Apparently this pin needs to be set to low in order to enable the external antenna
+#define TX_POWER                    84                  // Range is 8-84 which corresponds to 2dBm - 20dBm
 
 
 // ***************** UART configuration *****************
@@ -45,6 +46,7 @@
 #define UART_STOP_BITS          UART_STOP_BITS_1
 #define UART_FLOW_CTRL          UART_HW_FLOWCTRL_DISABLE
 #define UART_BUFFER_SIZE        1024
+#define UART_QUEUE_SIZE         40                      // Default is 20
 
 // ***************** USB configuration *****************
 #define USB_SERIAL_TX_BUFFER_SIZE        1024  // Size of the TX buffer

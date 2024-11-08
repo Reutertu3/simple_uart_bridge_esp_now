@@ -62,7 +62,7 @@ static void esp_now_recv_cb(const esp_now_recv_info_t *esp_now_info, const uint8
 
     #if DEBUG_RSSI
     // Log the RSSI value
-    int8_t rssi = esp_now_info->rx_ctrl->rssi;
+    int8_t rssi = esp_now_info->rx_ctrl->rssi;  // Retrieves the Received Signal Strength Indicator (RSSI) from the esp_now_info struct
     ESP_LOGI(TAG, "Received data from MAC: " MACSTR ", RSSI: %d dBm, Data length: %d",
              MAC2STR(esp_now_info->src_addr), rssi, len);
     #endif
@@ -75,7 +75,9 @@ static void esp_now_recv_cb(const esp_now_recv_info_t *esp_now_info, const uint8
 
 // Callback when data is sent via ESP-NOW
 static void esp_now_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    ESP_LOGI(TAG, "Send status: %s", status == ESP_NOW_SEND_SUCCESS ? "Success" : "Failure");
+    #if DEBUG_TEST
+        ESP_LOGI(TAG, "Send status: %s", status == ESP_NOW_SEND_SUCCESS ? "Success" : "Failure");
+    #endif
 }
 
 
@@ -91,7 +93,7 @@ void init_uart() {
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    uart_driver_install(UART_PORT_NUM, UART_BUFFER_SIZE * 2, UART_BUFFER_SIZE * 2, 20, &uart_queue, 0);
+    uart_driver_install(UART_PORT_NUM, UART_BUFFER_SIZE * 4, UART_BUFFER_SIZE * 4, UART_QUEUE_SIZE, &uart_queue, 0);
     uart_param_config(UART_PORT_NUM, &uart_config);
     #ifdef PLATFORM_REMOTE
         uart_set_pin(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
@@ -115,6 +117,7 @@ void init_wifi() {
     if (LONG_RANGE) {
         ESP_ERROR_CHECK(esp_wifi_set_protocol(ESP_IF_WIFI_STA, WIFI_PROTOCOL_LR));
     }
+    esp_wifi_set_max_tx_power(TX_POWER);
 }
 
 
@@ -177,7 +180,7 @@ void uart_to_esp_now_task(void *pvParameter) {
         
         if (len > 0) {
             ESP_ERROR_CHECK(esp_now_send(receiver_mac, data, len));                     // Send data via ESP-NOW
-            #ifdef DEBUG_TEST
+            #if DEBUG_TEST
                 ESP_LOGI(TAG, "uart received, sending");
                 ESP_LOG_BUFFER_HEXDUMP(TAG, data, len, ESP_LOG_INFO);                    // Print data as a hex dump into serial
             #endif
@@ -198,7 +201,7 @@ void esp_now_to_uart_task(void *pvParameter) {
             #elif defined(PLATFORM_BASE)
                 usb_serial_jtag_write_bytes(packet.data, packet.len, portMAX_DELAY);
             #endif
-            #ifdef DEBUG_TEST
+            #if DEBUG_TEST
                 ESP_LOGI(TAG, "ESPNOW packet received, hex dump:");
                 ESP_LOG_BUFFER_HEXDUMP(TAG, packet.data, packet.len, ESP_LOG_INFO);                    // Print data as a hex dump into serial
                 ESP_LOGI(TAG, "Data received: %.*s", packet.len, packet.data);                         // Print data as a string
